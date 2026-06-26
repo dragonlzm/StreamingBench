@@ -17,16 +17,22 @@ class Qwen2VL(Model):
         return "Qwen2-VL"
 
 def Qwen2VL_Init():
-    # Load the OneVision model
     global model, processor
+    model_path = os.environ.get("QWEN2VL_MODEL_PATH", "Qwen/Qwen2-VL-7B-Instruct")
+    attn_implementation = os.environ.get("QWEN2VL_ATTN_IMPLEMENTATION", "flash_attention_2")
+
     model = Qwen2VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen2-VL-7B-Instruct", 
+        model_path,
         torch_dtype="auto", 
         device_map="auto", 
-        attn_implementation="flash_attention_2"
+        attn_implementation=attn_implementation,
+        local_files_only=os.environ.get("TRANSFORMERS_OFFLINE") == "1",
     )
 
-    processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+    processor = AutoProcessor.from_pretrained(
+        model_path,
+        local_files_only=os.environ.get("TRANSFORMERS_OFFLINE") == "1",
+    )
 
 def Qwen2VL_Run(file, inp):
     numbers = re.findall(r'\d+', os.path.basename(file))

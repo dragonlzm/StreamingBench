@@ -38,6 +38,9 @@ def main(args):
         print("MiniCPMo loaded")
         from model.MiniCPMo import MiniCPMo
         model = MiniCPMo()
+    if args.model_name == "Qwen2-VL":
+        from model.Qwen2VL import Qwen2VL
+        model = Qwen2VL()
 
     ######################
 
