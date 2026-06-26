@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Output directory for model weights. Defaults to HF_HOME/models/Qwen2-VL-7B-Instruct.",
     )
+    parser.add_argument(
+        "--download-work-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Local filesystem directory used for Hugging Face downloads before copying to HF_HOME. "
+            "Use this when HF_HOME is on SMB/GVFS/NFS and file locks are unsupported. "
+            "Defaults to TMPDIR/streamingbench_platformr_downloads."
+        ),
+    )
     parser.add_argument("--skip-dataset-download", action="store_true", help="Do not download the dataset snapshot.")
     parser.add_argument("--skip-model-download", action="store_true", help="Do not download the Qwen2-VL snapshot.")
     parser.add_argument("--skip-video-prepare", action="store_true", help="Do not extract/copy videos.")
@@ -56,20 +67,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def snapshot_download(repo_id: str, repo_type: str, local_dir: Path) -> Path:
+def copy_directory_contents(src: Path, dst: Path) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target = dst / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, target)
+
+
+def safe_repo_dir_name(repo_id: str, repo_type: str) -> str:
+    return f"{repo_type}--{repo_id.replace('/', '--')}"
+
+
+def snapshot_download(repo_id: str, repo_type: str, local_dir: Path, download_work_dir: Path) -> Path:
     try:
         from huggingface_hub import snapshot_download as hf_snapshot_download
     except ImportError as exc:
         raise SystemExit("huggingface_hub is required. Install it before preparing offline assets.") from exc
 
+    download_dir = download_work_dir / safe_repo_dir_name(repo_id, repo_type)
+    download_dir.mkdir(parents=True, exist_ok=True)
     local_dir.mkdir(parents=True, exist_ok=True)
-    return Path(
+    snapshot_path = Path(
         hf_snapshot_download(
             repo_id=repo_id,
             repo_type=repo_type,
-            local_dir=str(local_dir),
+            local_dir=str(download_dir),
         )
     )
+    if snapshot_path.resolve() != local_dir.resolve():
+        print(f"Copying completed download {snapshot_path} -> {local_dir}")
+        copy_directory_contents(snapshot_path, local_dir)
+    return local_dir
 
 
 def extract_archives(raw_root: Path, extracted_root: Path) -> int:
@@ -172,6 +203,8 @@ def main() -> None:
     hf_home = Path(args.hf_home).expanduser().resolve()
     streamingbench_root = args.streamingbench_root or hf_home / "streamingbench"
     model_dir = args.model_dir or hf_home / "models" / "Qwen2-VL-7B-Instruct"
+    download_work_dir = args.download_work_dir or Path(tempfile.gettempdir()) / "streamingbench_platformr_downloads"
+    download_work_dir = download_work_dir.expanduser().resolve()
     source_annotation_root = args.repo_root / "src" / "data"
 
     raw_root = streamingbench_root / "raw"
@@ -183,7 +216,8 @@ def main() -> None:
 
     if not args.skip_dataset_download:
         print(f"Downloading dataset {args.dataset_id} to {raw_root}")
-        snapshot_download(args.dataset_id, "dataset", raw_root)
+        print(f"Using local download work dir: {download_work_dir}")
+        snapshot_download(args.dataset_id, "dataset", raw_root, download_work_dir)
 
     if not args.skip_video_prepare:
         archive_count = extract_archives(raw_root, extracted_root)
@@ -195,12 +229,14 @@ def main() -> None:
 
     if not args.skip_model_download:
         print(f"Downloading model {args.model_id} to {model_dir}")
-        snapshot_download(args.model_id, "model", model_dir)
+        print(f"Using local download work dir: {download_work_dir}")
+        snapshot_download(args.model_id, "model", model_dir, download_work_dir)
 
     print("\nPrepared offline inputs:")
     print(f"  annotations: {annotation_root}")
     print(f"  videos:      {video_root}")
     print(f"  model:       {model_dir}")
+    print(f"  work dir:    {download_work_dir}")
     if missing:
         print(f"  missing videos referenced by annotations: {len(missing)}")
         for path in sorted(missing)[:20]:
